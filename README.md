@@ -1,4 +1,4 @@
-# Sander United Arena — v1.4
+# Sander United Arena — v1.5
 
 Versão HTML5/Canvas para GitHub Pages.
 
