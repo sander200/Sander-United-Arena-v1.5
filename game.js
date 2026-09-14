@@ -4,290 +4,514 @@
 /* SANDER UNITED ARENA
    Mapa: assets/map-estacao-paulista.png
    Sprites: assets/sander-sprites.png e assets/nemesis-sprites.png
+
+   MOVIMENTO / IA:
+   - Sander anda pelas áreas permitidas do mapa.
+   - Colisão impede atravessar vegetação, água e limites.
+   - Movimento possui "slide" para contornar obstáculos.
+   - Némesis persegue Sander continuamente.
+   - Némesis procura rotas alternativas quando encontra obstáculos.
+   - Energia é coletada ao passar sobre ela.
+   - Z = ataque.
+   - X = especial / congelamento.
+   - C = teleporte.
 */
 
-const $=id=>document.getElementById(id),
-canvas=$("game"),
-ctx=canvas.getContext("2d"),
-mini=$("minimap"),
-mctx=mini.getContext("2d");
+const $ = id => document.getElementById(id);
+const canvas = $("game");
+const ctx = canvas.getContext("2d");
+const mini = $("minimap");
+const mctx = mini.getContext("2d");
 
-let MAP={w:1536,h:952},
-CFG={
-  speed:230,
-  nSpeed:175,
-  time:180,
-  maxEnergy:1000,
-  tp:30,
-  atkRange:92,
-  specialRange:230
+let MAP = { w: 1536, h: 952 };
+
+let CFG = {
+  speed: 230,
+  nSpeed: 175,
+  time: 180,
+  maxEnergy: 1000,
+  tp: 30,
+  atkRange: 92,
+  specialRange: 230
 };
 
-let W=innerWidth,
-H=innerHeight,
-dpr=1,
-game=false,
-paused=false,
-muted=false,
-elapsed=0,
-last=0,
-choice="normal",
-msgT=0;
+let W = innerWidth;
+let H = innerHeight;
+let dpr = 1;
 
-let camera={x:0,y:0},
-keys=new Set(),
-audio=null,
-mapOK=false,
-sanderOK=false,
-nemesisOK=false,
-mapCanvas=null,
-mapData=null,
-roadMini=null;
+let game = false;
+let paused = false;
+let muted = false;
+let elapsed = 0;
+let last = 0;
+let choice = "normal";
+let msgT = 0;
 
-const MOVE_STEP=12;
-const PLAYER_COLLISION_RADIUS=21;
-const ENEMY_COLLISION_RADIUS=27;
-const VIEW_ZOOM=1.28;
-
-const imgs={
-  map:new Image(),
-  sander:new Image(),
-  nemesis:new Image()
+let camera = {
+  x: 0,
+  y: 0
 };
 
-imgs.map.onload=()=>{
-  MAP.w=imgs.map.naturalWidth||1536;
-  MAP.h=imgs.map.naturalHeight||952;
-  mapOK=true;
+let keys = new Set();
+let audio = null;
+
+let mapOK = false;
+let sanderOK = false;
+let nemesisOK = false;
+
+let mapCanvas = null;
+let mapData = null;
+let roadMini = null;
+
+const MOVE_STEP = 12;
+const PLAYER_COLLISION_RADIUS = 21;
+const ENEMY_COLLISION_RADIUS = 27;
+
+const VIEW_ZOOM = 1.28;
+
+const imgs = {
+  map: new Image(),
+  sander: new Image(),
+  nemesis: new Image()
+};
+
+imgs.map.onload = () => {
+  MAP.w = imgs.map.naturalWidth || 1536;
+  MAP.h = imgs.map.naturalHeight || 952;
+
+  mapOK = true;
+
   buildMapMask();
   drawMini();
 };
 
-imgs.sander.onload=()=>{
-  sanderOK=true;
+imgs.sander.onload = () => {
+  sanderOK = true;
 };
 
-imgs.nemesis.onload=()=>{
-  nemesisOK=true;
+imgs.nemesis.onload = () => {
+  nemesisOK = true;
 };
 
-imgs.map.src="assets/map-estacao-paulista.png";
-imgs.sander.src="assets/sander-sprites.png";
-imgs.nemesis.src="assets/nemesis-sprites.png";
+imgs.map.src = "assets/map-estacao-paulista.png";
+imgs.sander.src = "assets/sander-sprites.png";
+imgs.nemesis.src = "assets/nemesis-sprites.png";
 
 
 /* =========================
    PERSONAGENS
 ========================= */
 
-const sand={
-  x:130,
-  y:145,
-  r:21,
-  hp:100,
-  energy:0,
-  level:1,
-  f:{x:1,y:0},
-  inv:0,
-  atk:0,
-  special:0,
-  tp:0,
-  vx:0,
-  vy:0
+const sand = {
+  x: 130,
+  y: 145,
+  r: 21,
+
+  hp: 100,
+  energy: 0,
+  level: 1,
+
+  f: {
+    x: 1,
+    y: 0
+  },
+
+  vx: 0,
+  vy: 0,
+
+  inv: 0,
+  atk: 0,
+  special: 0,
+  tp: 0
 };
 
-const nem={
-  x:1125,
-  y:185,
-  r:27,
-  hp:1100,
-  maxHp:1100,
-  energy:0,
-  level:1,
-  f:{x:-1,y:0},
-  atk:0,
-  special:0,
-  target:null,
-  state:"collect",
-  vx:0,
-  vy:0
+const nem = {
+  x: 1125,
+  y: 185,
+  r: 27,
+
+  hp: 1100,
+  maxHp: 1100,
+
+  energy: 0,
+  level: 1,
+
+  f: {
+    x: -1,
+    y: 0
+  },
+
+  vx: 0,
+  vy: 0,
+
+  atk: 0,
+  special: 0,
+
+  target: null,
+  state: "hunt",
+
+  freeze: 0,
+  stuck: 0,
+  repath: 0
 };
 
-let energy=[];
-let parts=[];
-let texts=[];
+let energy = [];
+let parts = [];
+let texts = [];
 
 
-const diff={
-  easy:{
-    hp:900,
-    damage:.72,
-    speed:.86,
-    brain:.78
+/* =========================
+   DIFICULDADE
+========================= */
+
+const diff = {
+
+  easy: {
+    hp: 900,
+    damage: .72,
+    speed: .86,
+    brain: .78
   },
-  normal:{
-    hp:1100,
-    damage:1,
-    speed:1,
-    brain:1
+
+  normal: {
+    hp: 1100,
+    damage: 1,
+    speed: 1,
+    brain: 1
   },
-  hard:{
-    hp:1350,
-    damage:1.28,
-    speed:1.12,
-    brain:1.35
+
+  hard: {
+    hp: 1350,
+    damage: 1.28,
+    speed: 1.12,
+    brain: 1.35
   }
+
 };
 
 
 /* =========================
-   ÁREAS DE SEGURANÇA
+   COLISÃO DE SEGURANÇA
 ========================= */
 
-const fallbackBlocks=[
-{x:0,y:0,w:1536,h:18},
-{x:0,y:846,w:1536,h:18},
-{x:0,y:0,w:18,h:864},
-{x:1518,y:0,w:18,h:864},
+const fallbackBlocks = [
 
-{x:60,y:55,w:300,h:125},
-{x:425,y:25,w:190,h:170},
-{x:785,y:25,w:360,h:120},
-{x:1170,y:40,w:310,h:125},
+  {
+    x: 0,
+    y: 0,
+    w: 1536,
+    h: 18
+  },
 
-{x:75,y:260,w:285,h:130},
-{x:420,y:265,w:215,h:135},
-{x:770,y:255,w:180,h:120},
-{x:1150,y:235,w:300,h:145},
+  {
+    x: 0,
+    y: 846,
+    w: 1536,
+    h: 18
+  },
 
-{x:70,y:415,w:290,h:135},
-{x:445,y:430,w:235,h:130},
-{x:790,y:445,w:250,h:125},
-{x:1090,y:435,w:350,h:145},
+  {
+    x: 0,
+    y: 0,
+    w: 18,
+    h: 864
+  },
 
-{x:55,y:610,w:315,h:125},
-{x:430,y:615,w:280,h:120},
-{x:750,y:635,w:330,h:120},
-{x:1110,y:620,w:340,h:135}
+  {
+    x: 1518,
+    y: 0,
+    w: 18,
+    h: 864
+  },
+
+  {
+    x: 60,
+    y: 55,
+    w: 300,
+    h: 125
+  },
+
+  {
+    x: 425,
+    y: 25,
+    w: 190,
+    h: 170
+  },
+
+  {
+    x: 785,
+    y: 25,
+    w: 360,
+    h: 120
+  },
+
+  {
+    x: 1170,
+    y: 40,
+    w: 310,
+    h: 125
+  },
+
+  {
+    x: 75,
+    y: 260,
+    w: 285,
+    h: 130
+  },
+
+  {
+    x: 420,
+    y: 265,
+    w: 215,
+    h: 135
+  },
+
+  {
+    x: 770,
+    y: 255,
+    w: 180,
+    h: 120
+  },
+
+  {
+    x: 1150,
+    y: 235,
+    w: 300,
+    h: 145
+  },
+
+  {
+    x: 70,
+    y: 415,
+    w: 290,
+    h: 135
+  },
+
+  {
+    x: 445,
+    y: 430,
+    w: 235,
+    h: 130
+  },
+
+  {
+    x: 790,
+    y: 445,
+    w: 250,
+    h: 125
+  },
+
+  {
+    x: 1090,
+    y: 435,
+    w: 350,
+    h: 145
+  },
+
+  {
+    x: 55,
+    y: 610,
+    w: 315,
+    h: 125
+  },
+
+  {
+    x: 430,
+    y: 615,
+    w: 280,
+    h: 120
+  },
+
+  {
+    x: 750,
+    y: 635,
+    w: 330,
+    h: 120
+  },
+
+  {
+    x: 1110,
+    y: 620,
+    w: 340,
+    h: 135
+  }
+
 ];
 
 
 /* =========================
-   TELA / ORIENTAÇÃO
+   RESOLUÇÃO / ORIENTAÇÃO
 ========================= */
 
-function resize(){
+function resize() {
 
-  W=innerWidth;
-  H=innerHeight;
+  W = innerWidth;
+  H = innerHeight;
 
-  dpr=Math.min(devicePixelRatio||1,2);
+  dpr = Math.min(
+    devicePixelRatio || 1,
+    2
+  );
 
-  canvas.width=Math.max(1,Math.floor(W*dpr));
-  canvas.height=Math.max(1,Math.floor(H*dpr));
+  canvas.width = Math.max(
+    1,
+    Math.floor(W * dpr)
+  );
+
+  canvas.height = Math.max(
+    1,
+    Math.floor(H * dpr)
+  );
 
   ctx.setTransform(
-    dpr,0,0,dpr,0,0
+    dpr,
+    0,
+    0,
+    dpr,
+    0,
+    0
   );
 
   drawMini();
+
   updateOrientationLock();
 }
 
 
-function isMobile(){
-  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
-  || Math.min(innerWidth,innerHeight)<700;
+function isMobile() {
+
+  return (
+    /Android|iPhone|iPad|iPod/i.test(
+      navigator.userAgent
+    ) ||
+    Math.min(
+      innerWidth,
+      innerHeight
+    ) < 700
+  );
+
 }
 
 
-function isPortrait(){
-  return innerHeight>innerWidth;
+function isPortrait() {
+
+  return innerHeight > innerWidth;
+
 }
 
 
-function updateOrientationLock(){
+function updateOrientationLock() {
 
-  const lock=$("orientation-lock");
+  const lock =
+    $("orientation-lock");
 
-  if(!lock)return;
+  if (!lock) return;
 
-  lock.style.display=
-    (isMobile()&&isPortrait())
-    ?"flex"
-    :"none";
+  lock.style.display =
+    (
+      isMobile() &&
+      isPortrait()
+    )
+      ? "flex"
+      : "none";
+
 }
 
 
-async function requestLandscape(){
+async function requestLandscape() {
 
-  try{
+  try {
 
-    if(
+    if (
       document.documentElement.requestFullscreen &&
       !document.fullscreenElement
-    ){
+    ) {
 
       await document.documentElement.requestFullscreen();
 
     }
 
-  }catch{}
+  } catch {}
 
-  try{
 
-    if(
+  try {
+
+    if (
       screen.orientation &&
       screen.orientation.lock
-    ){
+    ) {
 
-      await screen.orientation.lock("landscape");
+      await screen.orientation.lock(
+        "landscape"
+      );
 
     }
 
-  }catch{}
+  } catch {}
+
 
   updateOrientationLock();
+
   resize();
+
 }
 
 
-$("rotateBtn").onclick=()=>requestLandscape();
+$("rotateBtn").onclick =
+  () => requestLandscape();
 
 
 addEventListener(
   "orientationchange",
-  ()=>setTimeout(updateOrientationLock,120)
+  () => setTimeout(
+    updateOrientationLock,
+    120
+  )
 );
+
 
 addEventListener(
   "resize",
-  ()=>setTimeout(updateOrientationLock,60)
+  () => setTimeout(
+    updateOrientationLock,
+    60
+  )
 );
+
 
 addEventListener(
   "resize",
   resize
 );
 
+
 resize();
 
 
 /* =========================
-   LEITURA DO MAPA
+   MÁSCARA DO MAPA
 ========================= */
 
-function buildMapMask(){
+function buildMapMask() {
 
-  mapCanvas=document.createElement("canvas");
+  mapCanvas =
+    document.createElement(
+      "canvas"
+    );
 
-  mapCanvas.width=MAP.w;
-  mapCanvas.height=MAP.h;
+  mapCanvas.width =
+    MAP.w;
 
-  const c=mapCanvas.getContext(
-    "2d",
-    {willReadFrequently:true}
-  );
+  mapCanvas.height =
+    MAP.h;
+
+  const c =
+    mapCanvas.getContext(
+      "2d",
+      {
+        willReadFrequently: true
+      }
+    );
 
   c.drawImage(
     imgs.map,
@@ -297,143 +521,219 @@ function buildMapMask(){
     MAP.h
   );
 
-  try{
+  try {
 
-    mapData=c.getImageData(
-      0,
-      0,
-      MAP.w,
-      MAP.h
-    ).data;
+    mapData =
+      c.getImageData(
+        0,
+        0,
+        MAP.w,
+        MAP.h
+      ).data;
 
     buildRoadMini();
 
-  }catch{
+  } catch {
 
-    mapData=null;
+    mapData = null;
 
   }
+
 }
 
 
 /* =========================
-   COLISÃO DO MAPA
+   DETECÇÃO DO CAMINHO
 ========================= */
 
-function pathPixel(x,y){
+function pathPixel(x, y) {
 
-  if(!mapData)return true;
+  if (!mapData)
+    return true;
 
-  x=Math.floor(x);
-  y=Math.floor(y);
+  x = Math.floor(x);
+  y = Math.floor(y);
 
-  if(
-    x<0 ||
-    y<0 ||
-    x>=MAP.w ||
-    y>=MAP.h
-  )return false;
+  if (
+    x < 0 ||
+    y < 0 ||
+    x >= MAP.w ||
+    y >= MAP.h
+  ) {
 
-  const i=(y*MAP.w+x)*4;
+    return false;
 
-  const r=mapData[i];
-  const g=mapData[i+1];
-  const b=mapData[i+2];
+  }
 
-  const max=Math.max(r,g,b);
-  const min=Math.min(r,g,b);
+  const i =
+    (y * MAP.w + x) * 4;
 
-  const lum=(r+g+b)/3;
+  const r = mapData[i];
+  const g = mapData[i + 1];
+  const b = mapData[i + 2];
 
-  const warm=
-    r>115 &&
-    g>90 &&
-    r>=g*.88 &&
-    g>=b*1.05 &&
-    b<205;
+  const max =
+    Math.max(r, g, b);
 
-  const neutral=
-    Math.abs(r-g)<28 &&
-    Math.abs(g-b)<35 &&
-    lum>72 &&
-    lum<225;
+  const min =
+    Math.min(r, g, b);
 
-  const blueFloor=
-    b>105 &&
-    b>=g*.92 &&
-    b>=r*.72 &&
-    lum>65 &&
-    max-min>25;
+  const lum =
+    (r + g + b) / 3;
 
-  const vegetation=
-    g>r*1.16 &&
-    g>b*1.06 &&
-    g>70;
 
-  const dark=
-    lum<28;
+  const warm =
+    r > 115 &&
+    g > 90 &&
+    r >= g * .88 &&
+    g >= b * 1.05 &&
+    b < 205;
 
-  return !vegetation &&
-         !dark &&
-         (warm||neutral||blueFloor);
+
+  const neutral =
+    Math.abs(r - g) < 28 &&
+    Math.abs(g - b) < 35 &&
+    lum > 72 &&
+    lum < 225;
+
+
+  const blueFloor =
+    b > 105 &&
+    b >= g * .92 &&
+    b >= r * .72 &&
+    lum > 65 &&
+    max - min > 25;
+
+
+  const vegetation =
+    g > r * 1.16 &&
+    g > b * 1.06 &&
+    g > 70;
+
+
+  const dark =
+    lum < 28;
+
+
+  return (
+    !vegetation &&
+    !dark &&
+    (
+      warm ||
+      neutral ||
+      blueFloor
+    )
+  );
+
 }
 
 
-function blockedByMap(x,y,r){
+/* =========================
+   COLISÃO COM MAPA
+========================= */
 
-  if(!mapData)return false;
+function blockedByMap(
+  x,
+  y,
+  r
+) {
 
-  const pts=[
-    [0,0],
-    [r*.72,0],
-    [-r*.72,0],
-    [0,r*.72],
-    [0,-r*.72],
-    [r*.52,r*.52],
-    [-r*.52,r*.52],
-    [r*.52,-r*.52],
-    [-r*.52,-r*.52]
+  if (!mapData)
+    return false;
+
+
+  const pts = [
+
+    [0, 0],
+
+    [r * .55, 0],
+
+    [-r * .55, 0],
+
+    [0, r * .55],
+
+    [0, -r * .55],
+
+    [r * .42, r * .42],
+
+    [-r * .42, r * .42],
+
+    [r * .42, -r * .42],
+
+    [-r * .42, -r * .42]
+
   ];
 
-  let blocked=0;
 
-  for(const p of pts){
+  let blocked = 0;
 
-    const px=Math.floor(x+p[0]);
-    const py=Math.floor(y+p[1]);
 
-    if(
-      px<0 ||
-      py<0 ||
-      px>=MAP.w ||
-      py>=MAP.h
-    ){
+  for (const p of pts) {
+
+    const px =
+      Math.floor(
+        x + p[0]
+      );
+
+    const py =
+      Math.floor(
+        y + p[1]
+      );
+
+
+    if (
+      px < 0 ||
+      py < 0 ||
+      px >= MAP.w ||
+      py >= MAP.h
+    ) {
 
       blocked++;
+
       continue;
 
     }
 
-    const i=(py*MAP.w+px)*4;
 
-    const r0=mapData[i];
-    const g0=mapData[i+1];
-    const b0=mapData[i+2];
+    const i =
+      (py * MAP.w + px) * 4;
 
-    const lum=(r0+g0+b0)/3;
 
-    const vegetation=
-      g0>r0*1.16 &&
-      g0>b0*1.06 &&
-      g0>70;
+    const r0 =
+      mapData[i];
 
-    const dark=
-      lum<22;
+    const g0 =
+      mapData[i + 1];
 
-    if(
+    const b0 =
+      mapData[i + 2];
+
+
+    const lum =
+      (r0 + g0 + b0) / 3;
+
+
+    const vegetation =
+      g0 > r0 * 1.20 &&
+      g0 > b0 * 1.08 &&
+      g0 > 72;
+
+
+    const water =
+      b0 > g0 * 1.18 &&
+      b0 > r0 * 1.20 &&
+      b0 > 80;
+
+
+    const veryDark =
+      lum < 18;
+
+
+    if (
       vegetation ||
-      dark
-    ){
+      water ||
+      veryDark
+    ) {
 
       blocked++;
 
@@ -441,38 +741,9 @@ function blockedByMap(x,y,r){
 
   }
 
-  return blocked>=5;
-}
 
+  return blocked >= 7;
 
-function blockedFallback(
-  x,
-  y,
-  r
-){
-
-  if(
-    x-r<20 ||
-    x+r>1516 ||
-    y-r<20 ||
-    y+r>844
-  ){
-
-    return true;
-
-  }
-
-  return fallbackBlocks.some(
-    o=>circleRect(
-      x,
-      y,
-      r,
-      o.x,
-      o.y,
-      o.w,
-      o.h
-    )
-  );
 }
 
 
@@ -484,42 +755,98 @@ function circleRect(
   ry,
   rw,
   rh
-){
+) {
 
-  const cx=Math.max(
-    rx,
-    Math.min(x,rx+rw)
+  const cx =
+    Math.max(
+      rx,
+      Math.min(
+        x,
+        rx + rw
+      )
+    );
+
+
+  const cy =
+    Math.max(
+      ry,
+      Math.min(
+        y,
+        ry + rh
+      )
+    );
+
+
+  return (
+    Math.hypot(
+      x - cx,
+      y - cy
+    ) < r
   );
 
-  const cy=Math.max(
-    ry,
-    Math.min(y,ry+rh)
-  );
-
-  return Math.hypot(
-    x-cx,
-    y-cy
-  )<r;
 }
 
 
-function walkable(x,y,r){
+function blockedFallback(
+  x,
+  y,
+  r
+) {
 
-  if(
-    x-r<18 ||
-    x+r>1518 ||
-    y-r<18 ||
-    y+r>846
-  ){
+  if (
+    x - r < 20 ||
+    x + r > 1516 ||
+    y - r < 20 ||
+    y + r > 844
+  ) {
+
+    return true;
+
+  }
+
+
+  return fallbackBlocks.some(
+    o =>
+      circleRect(
+        x,
+        y,
+        r,
+        o.x,
+        o.y,
+        o.w,
+        o.h
+      )
+  );
+
+}
+
+
+/* =========================
+   PONTO CAMINHÁVEL
+========================= */
+
+function walkable(
+  x,
+  y,
+  r
+) {
+
+  if (
+    x - r < 12 ||
+    x + r > MAP.w - 12 ||
+    y - r < 12 ||
+    y + r > MAP.h - 12
+  ) {
 
     return false;
 
   }
 
-  if(
+
+  if (
     !mapOK ||
     !mapData
-  ){
+  ) {
 
     return !blockedFallback(
       x,
@@ -529,104 +856,133 @@ function walkable(x,y,r){
 
   }
 
-  if(
-    blockedByMap(
-      x,
-      y,
-      r
-    )
-  ){
 
-    return false;
+  return !blockedByMap(
+    x,
+    y,
+    r
+  );
 
-  }
-
-  return true;
 }
 
 
 /* =========================
-   MOVIMENTO
+   MOVIMENTO COM SLIDE
 ========================= */
 
-function move(o,dx,dy){
+function move(
+  o,
+  dx,
+  dy
+) {
 
-  const len=Math.hypot(dx,dy);
+  const len =
+    Math.hypot(
+      dx,
+      dy
+    );
 
-  if(!len){
 
-    o.vx=0;
-    o.vy=0;
+  if (!len) {
+
+    o.vx = 0;
+    o.vy = 0;
 
     return false;
+
   }
 
-  const steps=Math.max(
-    1,
-    Math.ceil(len/MOVE_STEP)
-  );
 
-  const sx=dx/steps;
-  const sy=dy/steps;
+  const steps =
+    Math.max(
+      1,
+      Math.ceil(
+        len / MOVE_STEP
+      )
+    );
 
-  let moved=false;
 
-  for(
-    let i=0;
-    i<steps;
+  const sx =
+    dx / steps;
+
+  const sy =
+    dy / steps;
+
+
+  let moved = false;
+
+
+  for (
+    let i = 0;
+    i < steps;
     i++
-  ){
+  ) {
 
-    if(
+    /*
+      Primeiro tenta o movimento
+      completo.
+    */
+
+    if (
       walkable(
-        o.x+sx,
-        o.y+sy,
+        o.x + sx,
+        o.y + sy,
         o.r
       )
-    ){
+    ) {
 
-      o.x+=sx;
-      o.y+=sy;
+      o.x += sx;
+      o.y += sy;
 
-      moved=true;
+      moved = true;
 
       continue;
+
     }
 
 
-    let mx=false;
-    let my=false;
+    /*
+      Se diagonal está bloqueada,
+      tenta X.
+    */
+
+    let mx = false;
+    let my = false;
 
 
-    if(
+    if (
       walkable(
-        o.x+sx,
+        o.x + sx,
         o.y,
         o.r
       )
-    ){
+    ) {
 
-      o.x+=sx;
-      mx=true;
+      o.x += sx;
+      mx = true;
 
     }
 
 
-    if(
+    /*
+      Depois tenta Y.
+    */
+
+    if (
       walkable(
         o.x,
-        o.y+sy,
+        o.y + sy,
         o.r
       )
-    ){
+    ) {
 
-      o.y+=sy;
-      my=true;
+      o.y += sy;
+      my = true;
 
     }
 
 
-    moved=
+    moved =
       moved ||
       mx ||
       my;
@@ -634,10 +990,15 @@ function move(o,dx,dy){
   }
 
 
-  o.vx=moved?dx:0;
-  o.vy=moved?dy:0;
+  o.vx =
+    moved ? dx : 0;
+
+  o.vy =
+    moved ? dy : 0;
+
 
   return moved;
+
 }
 
 
@@ -645,9 +1006,9 @@ function move(o,dx,dy){
    ENERGIA
 ========================= */
 
-function seed(){
+function seed() {
 
-  const pts=[
+  const pts = [
 
     [125,150],
     [355,165],
@@ -677,46 +1038,158 @@ function seed(){
 
   ];
 
-  energy=pts.map(
-    (p,i)=>({
-      x:p[0],
-      y:p[1],
-      r:11,
-      active:true,
-      wait:0,
-      p:i
-    })
-  );
+
+  energy =
+    pts.map(
+      (p, i) => ({
+
+        x: p[0],
+        y: p[1],
+
+        r: 11,
+
+        active: true,
+
+        wait: 0,
+
+        p: i
+
+      })
+    );
+
 }
 
 
-function dist(a,b){
+function collect(
+  o,
+  player
+) {
+
+  for (
+    const e of energy
+  ) {
+
+    if (!e.active)
+      continue;
+
+
+    if (
+      Math.hypot(
+        o.x - e.x,
+        o.y - e.y
+      ) <
+      o.r + e.r + 6
+    ) {
+
+      e.active = false;
+
+      e.wait = 8;
+
+
+      if (player) {
+
+        o.energy =
+          Math.min(
+            CFG.maxEnergy,
+            o.energy + 100
+          );
+
+
+        o.level =
+          Math.min(
+            10,
+            1 +
+            Math.floor(
+              o.energy / 250
+            )
+          );
+
+
+        burst(
+          e.x,
+          e.y,
+          "#ffd52b",
+          14
+        );
+
+
+        text(
+          e.x,
+          e.y,
+          "+100 ENERGIA"
+        );
+
+
+        beep(
+          660,
+          .07
+        );
+
+      } else {
+
+        o.energy =
+          Math.min(
+            CFG.maxEnergy,
+            o.energy + 60
+          );
+
+      }
+
+    }
+
+  }
+
+}
+
+
+/* =========================
+   UTILITÁRIOS
+========================= */
+
+function dist(a, b) {
 
   return Math.hypot(
-    a.x-b.x,
-    a.y-b.y
+    a.x - b.x,
+    a.y - b.y
   );
 
 }
 
 
-function clamp(v,a,b){
+function clamp(
+  v,
+  a,
+  b
+) {
 
   return Math.max(
     a,
-    Math.min(b,v)
+    Math.min(
+      b,
+      v
+    )
   );
 
 }
 
 
-function norm(x,y){
+function norm(
+  x,
+  y
+) {
 
-  const l=Math.hypot(x,y)||1;
+  const l =
+    Math.hypot(
+      x,
+      y
+    ) || 1;
+
 
   return {
-    x:x/l,
-    y:y/l
+
+    x: x / l,
+    y: y / l
+
   };
 
 }
@@ -726,7 +1199,10 @@ function norm(x,y){
    HUD
 ========================= */
 
-function show(id,on){
+function show(
+  id,
+  on
+) {
 
   $(id).classList.toggle(
     "hidden",
@@ -738,60 +1214,75 @@ function show(id,on){
 
 function message(
   t,
-  s=1.6
-){
+  s = 1.6
+) {
 
-  $("message").textContent=t;
+  $("message").textContent = t;
 
   $("message").classList.add(
     "show"
   );
 
-  msgT=s;
+  msgT = s;
 
 }
 
 
 function beep(
-  f=440,
-  d=.06
-){
+  f = 440,
+  d = .06
+) {
 
-  if(muted)return;
+  if (muted)
+    return;
 
-  try{
+
+  try {
 
     audio ||= new(
       window.AudioContext ||
       window.webkitAudioContext
     )();
 
-    const o=
+
+    const o =
       audio.createOscillator();
 
-    const g=
+    const g =
       audio.createGain();
 
-    o.type="sine";
-    o.frequency.value=f;
 
-    g.gain.value=.035;
+    o.type =
+      "sine";
+
+    o.frequency.value =
+      f;
+
+    g.gain.value =
+      .035;
+
 
     o.connect(g);
-    g.connect(audio.destination);
+
+    g.connect(
+      audio.destination
+    );
+
 
     o.start();
 
+
     g.gain.exponentialRampToValueAtTime(
       .001,
-      audio.currentTime+d
+      audio.currentTime + d
     );
+
 
     o.stop(
-      audio.currentTime+d
+      audio.currentTime + d
     );
 
-  }catch{}
+  } catch {}
 
 }
 
@@ -800,16 +1291,27 @@ function beep(
    BOTÕES
 ========================= */
 
-$("startBtn").onclick=async()=>{
+$("startBtn").onclick =
+  async () => {
 
-  await requestLandscape();
+    await requestLandscape();
 
-  show("intro",false);
-  show("difficulty",true);
+    show(
+      "intro",
+      false
+    );
 
-  beep(440,.08);
+    show(
+      "difficulty",
+      true
+    );
 
-};
+    beep(
+      440,
+      .08
+    );
+
+  };
 
 
 document
@@ -817,110 +1319,197 @@ document
     "[data-difficulty]"
   )
   .forEach(
-    b=>b.onclick=()=>{
-      choice=b.dataset.difficulty;
-      start();
-    }
+    b =>
+      b.onclick =
+        () => {
+
+          choice =
+            b.dataset.difficulty;
+
+          start();
+
+        }
   );
 
 
-$("pauseBtn").onclick=
-  togglePause;
-
-$("resumeBtn").onclick=
+$("pauseBtn").onclick =
   togglePause;
 
 
-$("soundBtn").onclick=()=>{
-
-  muted=!muted;
-
-  $("soundBtn").textContent=
-    muted?"🔇":"🔊";
-
-  if(!muted)
-    beep(520,.05);
-
-};
+$("resumeBtn").onclick =
+  togglePause;
 
 
-$("restartBtn").onclick=()=>{
+$("soundBtn").onclick =
+  () => {
 
-  show("result",false);
-  show("difficulty",true);
+    muted =
+      !muted;
 
-};
+    $("soundBtn").textContent =
+      muted
+        ? "🔇"
+        : "🔊";
+
+
+    if (!muted)
+      beep(
+        520,
+        .05
+      );
+
+  };
+
+
+$("restartBtn").onclick =
+  () => {
+
+    show(
+      "result",
+      false
+    );
+
+    show(
+      "difficulty",
+      true
+    );
+
+  };
 
 
 /* =========================
-   INICIAR JOGO
+   INICIAR
 ========================= */
 
-async function start(){
+async function start() {
 
   await requestLandscape();
 
-  const d=diff[choice];
 
-  sand.x=130;
-  sand.y=145;
-  sand.hp=100;
-  sand.energy=0;
-  sand.level=1;
-  sand.atk=0;
-  sand.special=0;
-  sand.tp=0;
-  sand.vx=0;
-  sand.vy=0;
+  const d =
+    diff[choice];
 
-  nem.x=1125;
-  nem.y=185;
-  nem.maxHp=d.hp;
-  nem.hp=d.hp;
-  nem.energy=0;
-  nem.level=1;
-  nem.atk=0;
-  nem.special=0;
-  nem.target=null;
-  nem.state="collect";
-  nem.vx=0;
-  nem.vy=0;
 
-  elapsed=0;
+  /* SANDER */
 
-  energy=[];
-  parts=[];
-  texts=[];
+  sand.x = 130;
+  sand.y = 145;
+
+  sand.hp = 100;
+  sand.energy = 0;
+
+  sand.level = 1;
+
+  sand.atk = 0;
+  sand.special = 0;
+  sand.tp = 0;
+
+  sand.vx = 0;
+  sand.vy = 0;
+
+
+  /* NÉMESIS */
+
+  nem.x = 1125;
+  nem.y = 185;
+
+  nem.maxHp =
+    d.hp;
+
+  nem.hp =
+    d.hp;
+
+  nem.energy = 0;
+  nem.level = 1;
+
+  nem.atk = 0;
+  nem.special = 0;
+
+  nem.target =
+    sand;
+
+  nem.state =
+    "hunt";
+
+  nem.freeze =
+    0;
+
+  nem.stuck =
+    0;
+
+  nem.repath =
+    0;
+
+  nem.vx = 0;
+  nem.vy = 0;
+
+
+  elapsed = 0;
+
+  energy = [];
+  parts = [];
+  texts = [];
+
 
   seed();
 
-  camera.x=clamp(
-    sand.x,
-    W/(2*VIEW_ZOOM),
-    MAP.w-W/(2*VIEW_ZOOM)
+
+  camera.x =
+    clamp(
+      sand.x,
+      W /
+      (2 * VIEW_ZOOM),
+      MAP.w -
+      W /
+      (2 * VIEW_ZOOM)
+    );
+
+
+  camera.y =
+    clamp(
+      sand.y,
+      H /
+      (2 * VIEW_ZOOM),
+      MAP.h -
+      H /
+      (2 * VIEW_ZOOM)
+    );
+
+
+  paused = false;
+  game = true;
+
+
+  show(
+    "difficulty",
+    false
   );
 
-  camera.y=clamp(
-    sand.y,
-    H/(2*VIEW_ZOOM),
-    MAP.h-H/(2*VIEW_ZOOM)
+  show(
+    "hud",
+    true
   );
 
-  paused=false;
-  game=true;
+  show(
+    "touch",
+    true
+  );
 
-  show("difficulty",false);
-  show("hud",true);
-  show("touch",true);
 
-  last=performance.now();
+  last =
+    performance.now();
+
 
   message(
     "Recolha energia. Némesis também está evoluindo!",
     2.5
   );
 
-  requestAnimationFrame(loop);
+
+  requestAnimationFrame(
+    loop
+  );
+
 }
 
 
@@ -928,53 +1517,89 @@ async function start(){
    FINAL
 ========================= */
 
-function finish(win){
+function finish(
+  win
+) {
 
-  if(!game)return;
+  if (!game)
+    return;
 
-  game=false;
 
-  show("hud",false);
-  show("touch",false);
-  show("result",true);
+  game = false;
 
-  $("resultIcon").textContent=
-    win?"🏆":"💥";
 
-  $("resultTitle").textContent=
+  show(
+    "hud",
+    false
+  );
+
+  show(
+    "touch",
+    false
+  );
+
+  show(
+    "result",
+    true
+  );
+
+
+  $("resultIcon").textContent =
     win
-    ?"VITÓRIA!"
-    :"NÉMESIS VENCEU";
+      ? "🏆"
+      : "💥";
 
-  $("resultText").textContent=
+
+  $("resultTitle").textContent =
     win
-    ?`Némesis foi derrotado. Sander terminou com ${Math.round(sand.hp)}% de vida.`
-    :"A energia de Sander chegou a zero.";
+      ? "VITÓRIA!"
+      : "NÉMESIS VENCEU";
+
+
+  $("resultText").textContent =
+    win
+
+      ? `Némesis foi derrotado. Sander terminou com ${Math.round(sand.hp)}% de vida.`
+
+      : "A energia de Sander chegou a zero.";
+
 
   beep(
-    win?880:110,
+    win ? 880 : 110,
     .22
   );
 
 }
 
 
-function togglePause(){
+/* =========================
+   PAUSA
+========================= */
 
-  if(!game)return;
+function togglePause() {
 
-  paused=!paused;
+  if (!game)
+    return;
+
+
+  paused =
+    !paused;
+
 
   show(
     "pause",
     paused
   );
 
-  if(!paused){
 
-    last=performance.now();
+  if (!paused) {
 
-    requestAnimationFrame(loop);
+    last =
+      performance.now();
+
+    requestAnimationFrame(
+      loop
+    );
 
   }
 
@@ -987,32 +1612,46 @@ function togglePause(){
 
 addEventListener(
   "keydown",
-  e=>{
+  e => {
 
-    const k=
-      e.key.length===1
-      ?e.key.toLowerCase()
-      :e.key;
+    const k =
+      e.key.length === 1
+        ? e.key.toLowerCase()
+        : e.key;
+
 
     keys.add(k);
 
-    if([
-      "ArrowUp",
-      "ArrowDown",
-      "ArrowLeft",
-      "ArrowRight",
-      "z",
-      "x",
-      "c",
-      " "
-    ].includes(k)){
+
+    if (
+      [
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowRight",
+        "w",
+        "a",
+        "s",
+        "d",
+        "z",
+        "x",
+        "c",
+        " "
+      ].includes(k)
+    ) {
 
       e.preventDefault();
 
     }
 
-    if(k==="Escape")
+
+    if (
+      k === "Escape"
+    ) {
+
       togglePause();
+
+    }
 
   }
 );
@@ -1020,12 +1659,13 @@ addEventListener(
 
 addEventListener(
   "keyup",
-  e=>{
+  e => {
 
-    const k=
-      e.key.length===1
-      ?e.key.toLowerCase()
-      :e.key;
+    const k =
+      e.key.length === 1
+        ? e.key.toLowerCase()
+        : e.key;
+
 
     keys.delete(k);
 
@@ -1041,265 +1681,214 @@ document
   .querySelectorAll(
     "#touch button"
   )
-  .forEach(b=>{
+  .forEach(
+    b => {
 
-    const k=b.dataset.key;
-
-    const down=e=>{
-
-      e.preventDefault();
-
-      keys.add(k);
-
-      if(k==="z")
-        attack();
-
-      if(k==="x")
-        special();
-
-      if(k==="c")
-        teleport();
-
-    };
-
-    const up=e=>{
-
-      e.preventDefault();
-
-      keys.delete(k);
-
-    };
-
-    b.addEventListener(
-      "pointerdown",
-      down
-    );
-
-    b.addEventListener(
-      "pointerup",
-      up
-    );
-
-    b.addEventListener(
-      "pointercancel",
-      up
-    );
-
-    b.addEventListener(
-      "pointerleave",
-      up
-    );
-
-  });
+      const k =
+        b.dataset.key;
 
 
-let latch={
-  z:false,
-  x:false,
-  c:false
-};
+      const down =
+        e => {
+
+          e.preventDefault();
+
+          keys.add(k);
 
 
-function actions(){
+          if (k === "z")
+            attack();
 
-  for(
-    const k of ["z","x","c"]
-  ){
+          if (k === "x")
+            special();
 
-    if(
-      keys.has(k) &&
-      !latch[k]
-    ){
+          if (k === "c")
+            teleport();
 
-      ({
-        z:attack,
-        x:special,
-        c:teleport
-      }[k])();
+        };
+
+
+      const up =
+        e => {
+
+          e.preventDefault();
+
+          keys.delete(k);
+
+        };
+
+
+      b.addEventListener(
+        "pointerdown",
+        down
+      );
+
+
+      b.addEventListener(
+        "pointerup",
+        up
+      );
+
+
+      b.addEventListener(
+        "pointercancel",
+        up
+      );
+
+
+      b.addEventListener(
+        "pointerleave",
+        up
+      );
 
     }
-
-    latch[k]=keys.has(k);
-
-  }
-
-}
-
-
-function input(){
-
-  let x=0;
-  let y=0;
-
-  if(keys.has("ArrowLeft"))
-    x--;
-
-  if(keys.has("ArrowRight"))
-    x++;
-
-  if(keys.has("ArrowUp"))
-    y--;
-
-  if(keys.has("ArrowDown"))
-    y++;
-
-  return x||y
-    ?norm(x,y)
-    :{x:0,y:0};
-
-}
+  );
 
 
 /* =========================
-   COLETA
+   AÇÕES DO JOGADOR
 ========================= */
 
-function collect(o,player){
+function actions() {
 
-  for(
-    const e of energy
-  ){
+  if (!game || paused)
+    return;
 
-    if(
-      e.active &&
-      Math.hypot(
-        o.x-e.x,
-        o.y-e.y
-      )<
-      o.r+e.r+5
-    ){
 
-      e.active=false;
-      e.wait=4.5;
+  let dx = 0;
+  let dy = 0;
 
-      o.energy=
-        clamp(
-          o.energy+100,
-          0,
-          CFG.maxEnergy
-        );
 
-      const old=o.level;
+  if (
+    keys.has("ArrowUp") ||
+    keys.has("w")
+  ) {
 
-      o.level=
-        1+
-        Math.floor(
-          o.energy/250
-        );
-
-      burst(
-        e.x,
-        e.y,
-        player
-          ?"#4ecbff"
-          :"#ffbd45",
-        10
-      );
-
-      text(
-        e.x,
-        e.y,
-        "+100 ⚡"
-      );
-
-      beep(
-        player?740:320,
-        .06
-      );
-
-      if(o.level>old){
-
-        message(
-          `${player?"SANDER":"NÉMESIS"} EVOLUIU! NÍVEL ${o.level}`,
-          1.2
-        );
-
-      }
-
-    }
+    dy -= 1;
 
   }
 
-}
 
+  if (
+    keys.has("ArrowDown") ||
+    keys.has("s")
+  ) {
 
-function updateEnergy(dt){
-
-  for(
-    const e of energy
-  ){
-
-    if(
-      !e.active &&
-      ((e.wait-=dt)<=0)
-    ){
-
-      e.active=true;
-
-    }
+    dy += 1;
 
   }
 
-}
+
+  if (
+    keys.has("ArrowLeft") ||
+    keys.has("a")
+  ) {
+
+    dx -= 1;
+
+  }
 
 
-/* =========================
-   MOVIMENTO SANDER
-========================= */
+  if (
+    keys.has("ArrowRight") ||
+    keys.has("d")
+  ) {
 
-function updatePlayer(dt){
+    dx += 1;
 
-  sand.atk=
-    Math.max(
-      0,
-      sand.atk-dt
-    );
-
-  sand.special=
-    Math.max(
-      0,
-      sand.special-dt
-    );
-
-  sand.tp=
-    Math.max(
-      0,
-      sand.tp-dt
-    );
-
-  sand.inv=
-    Math.max(
-      0,
-      sand.inv-dt
-    );
+  }
 
 
-  const v=input();
+  if (
+    dx !== 0 ||
+    dy !== 0
+  ) {
+
+    const n =
+      norm(dx, dy);
 
 
-  if(v.x||v.y){
+    sand.f.x =
+      n.x;
 
-    sand.f=v;
+    sand.f.y =
+      n.y;
 
-    const speed=
-      CFG.speed*
-      (
-        1+
-        (sand.level-1)*.035
-      );
 
     move(
       sand,
-      v.x*speed*dt,
-      v.y*speed*dt
+      n.x *
+      CFG.speed *
+      .016,
+      n.y *
+      CFG.speed *
+      .016
     );
 
-  }else{
+  }
 
-    sand.vx=0;
-    sand.vy=0;
+
+  if (
+    keys.has("z")
+  ) {
+
+    attack();
 
   }
+
+
+  if (
+    keys.has("x")
+  ) {
+
+    special();
+
+  }
+
+
+  if (
+    keys.has("c")
+  ) {
+
+    teleport();
+
+  }
+
+}
+
+
+/* =========================
+   UPDATE PLAYER
+========================= */
+
+function updatePlayer(dt) {
+
+  sand.inv =
+    Math.max(
+      0,
+      sand.inv - dt
+    );
+
+
+  sand.atk =
+    Math.max(
+      0,
+      sand.atk - dt
+    );
+
+
+  sand.special =
+    Math.max(
+      0,
+      sand.special - dt
+    );
+
+
+  sand.tp =
+    Math.max(
+      0,
+      sand.tp - dt
+    );
 
 
   collect(
@@ -1311,56 +1900,45 @@ function updatePlayer(dt){
 
 
 /* =========================
-   IA NÉMESIS
+   IA DO NÉMESIS
 ========================= */
 
-function nearest(o){
+function updateEnemy(dt) {
 
-  let best=null;
-  let bd=1e9;
-
-  for(
-    const e of energy
-  ){
-
-    if(e.active){
-
-      const d=dist(o,e);
-
-      if(d<bd){
-
-        bd=d;
-        best=e;
-
-      }
-
-    }
-
-  }
-
-  return best;
-
-}
+  const d =
+    diff[choice];
 
 
-function updateEnemy(dt){
-
-  const d=diff[choice];
-
-  nem.atk=
+  nem.atk =
     Math.max(
       0,
-      nem.atk-dt
-    );
-
-  nem.special=
-    Math.max(
-      0,
-      nem.special-dt
+      nem.atk - dt
     );
 
 
-  const dp=
+  nem.special =
+    Math.max(
+      0,
+      nem.special - dt
+    );
+
+
+  nem.freeze =
+    Math.max(
+      0,
+      (nem.freeze || 0) - dt
+    );
+
+
+  nem.target =
+    sand;
+
+
+  nem.state =
+    "hunt";
+
+
+  const dp =
     dist(
       nem,
       sand
@@ -1368,116 +1946,278 @@ function updateEnemy(dt){
 
 
   /*
-   * IA:
-   * perto de Sander = perseguir
-   * Sander com muita energia = perseguir
-   * longe = procurar energia
-   */
+    NÉMESIS CONGELADO
+  */
 
-  if(
-    dp<330*d.brain ||
-    sand.energy>nem.energy+180
-  ){
+  if (
+    nem.freeze > 0
+  ) {
 
-    nem.state="hunt";
-    nem.target=sand;
+    nem.vx = 0;
+    nem.vy = 0;
 
-  }else{
 
-    nem.state="collect";
+    if (
+      Math.random() < .08
+    ) {
 
-    if(
-      !nem.target ||
-      !nem.target.active
-    ){
+      burst(
+        nem.x +
+        (Math.random() - .5) * 25,
 
-      nem.target=
-        nearest(nem);
+        nem.y +
+        (Math.random() - .5) * 25,
+
+        "#72eaff",
+
+        2
+      );
 
     }
 
   }
 
+  else {
 
-  const t=
-    nem.target ||
-    sand;
+    /*
+      Direção para Sander.
+    */
 
-
-  const v=
-    norm(
-      t.x-nem.x,
-      t.y-nem.y
-    );
-
-
-  nem.f=v;
+    const v =
+      norm(
+        sand.x - nem.x,
+        sand.y - nem.y
+      );
 
 
-  const sp=
-    CFG.nSpeed*
-    d.speed*
-    (
-      1+
-      Math.min(
-        5,
-        nem.level-1
-      )*.025
-    );
+    nem.f =
+      v;
 
 
-  let moved=
-    move(
-      nem,
-      v.x*sp*dt,
-      v.y*sp*dt
-    );
+    const sp =
+      CFG.nSpeed *
+      d.speed *
+      (
+        1 +
+        Math.min(
+          5,
+          nem.level - 1
+        ) * .025
+      );
 
 
-  /*
-   * Se encontrar obstáculo,
-   * tenta contornar por quatro direções.
-   */
+    /*
+      Tenta ir diretamente até Sander.
+    */
 
-  if(!moved){
-
-    const options=[
-
-      {x:-v.y,y:v.x},
-      {x:v.y,y:-v.x},
-      {x:-v.x,y:v.y},
-      {x:v.x,y:-v.y}
-
-    ];
+    let moved =
+      move(
+        nem,
+        v.x * sp * dt,
+        v.y * sp * dt
+      );
 
 
-    for(
-      const a of options
-    ){
+    /*
+      Se encontrou obstáculo,
+      procura uma direção alternativa.
+    */
 
-      const n=
-        norm(
-          a.x,
-          a.y
-        );
+    if (!moved) {
 
-      if(
-        move(
-          nem,
-          n.x*sp*.9*dt,
-          n.y*sp*.9*dt
-        )
-      ){
+      const options = [];
 
-        moved=true;
-        break;
+
+      for (
+        let i = 0;
+        i < 16;
+        i++
+      ) {
+
+        const a =
+          Math.PI *
+          2 *
+          i /
+          16;
+
+
+        const n = {
+
+          x: Math.cos(a),
+
+          y: Math.sin(a)
+
+        };
+
+
+        if (
+          walkable(
+            nem.x +
+            n.x * 18,
+
+            nem.y +
+            n.y * 18,
+
+            nem.r
+          )
+        ) {
+
+          const nx =
+            nem.x +
+            n.x *
+            sp *
+            .9 *
+            dt;
+
+
+          const ny =
+            nem.y +
+            n.y *
+            sp *
+            .9 *
+            dt;
+
+
+          options.push({
+
+            n,
+
+            d:
+              Math.hypot(
+                nx - sand.x,
+                ny - sand.y
+              )
+
+          });
+
+        }
+
+      }
+
+
+      options.sort(
+        (a, b) =>
+          a.d - b.d
+      );
+
+
+      if (
+        options[0]
+      ) {
+
+        moved =
+          move(
+            nem,
+
+            options[0].n.x *
+            sp *
+            .9 *
+            dt,
+
+            options[0].n.y *
+            sp *
+            .9 *
+            dt
+          );
 
       }
 
     }
 
+
+    /*
+      Sistema anti-travamento.
+    */
+
+    nem.stuck =
+      moved
+        ? 0
+        : (nem.stuck || 0) + dt;
+
+
+    if (
+      nem.stuck > .5
+    ) {
+
+      for (
+        let radius = 24;
+        radius <= 120;
+        radius += 24
+      ) {
+
+        let found =
+          false;
+
+
+        for (
+          let i = 0;
+          i < 16;
+          i++
+        ) {
+
+          const a =
+            Math.PI *
+            2 *
+            i /
+            16;
+
+
+          const x =
+            nem.x +
+            Math.cos(a) *
+            radius;
+
+
+          const y =
+            nem.y +
+            Math.sin(a) *
+            radius;
+
+
+          if (
+            walkable(
+              x,
+              y,
+              nem.r
+            )
+          ) {
+
+            nem.x = x;
+            nem.y = y;
+
+            found =
+              true;
+
+            break;
+
+          }
+
+        }
+
+
+        if (found)
+          break;
+
+      }
+
+
+      nem.stuck = 0;
+
+    }
+
+
+    nem.vx =
+      v.x * sp;
+
+    nem.vy =
+      v.y * sp;
+
   }
 
+
+  /*
+    Némesis também pode recolher energia.
+  */
 
   collect(
     nem,
@@ -1486,19 +2226,25 @@ function updateEnemy(dt){
 
 
   /*
-   * Ataque normal
-   */
+    Ataque normal.
+  */
 
-  if(
-    dp<CFG.atkRange+7 &&
-    nem.atk<=0
-  ){
+  if (
+    dp <
+    CFG.atkRange + 8 &&
+    nem.atk <= 0
+  ) {
 
-    nem.atk=
-      1.1/d.brain;
+    nem.atk =
+      1.1 /
+      d.brain;
+
 
     hurtPlayer(
-      (7+nem.level*2)*
+      (
+        7 +
+        nem.level * 2
+      ) *
       d.damage
     );
 
@@ -1506,22 +2252,30 @@ function updateEnemy(dt){
 
 
   /*
-   * Especial da IA
-   */
+    Ataque especial.
+  */
 
-  if(
-    dp<CFG.specialRange &&
-    nem.special<=0 &&
-    nem.energy>=150
-  ){
+  if (
+    dp <
+    CFG.specialRange &&
+    nem.special <= 0 &&
+    nem.energy >= 150 &&
+    nem.freeze <= 0
+  ) {
 
-    nem.special=
-      5/d.brain;
+    nem.special =
+      5 /
+      d.brain;
 
-    nem.energy-=150;
+
+    nem.energy -= 150;
+
 
     hurtPlayer(
-      (12+nem.level*3)*
+      (
+        12 +
+        nem.level * 3
+      ) *
       d.damage
     );
 
@@ -1531,20 +2285,29 @@ function updateEnemy(dt){
 
 
 /* =========================
-   DANO NO SANDER
+   DANO AO SANDER
 ========================= */
 
-function hurtPlayer(dmg){
+function hurtPlayer(
+  dmg
+) {
 
-  if(sand.inv>0)return;
+  if (
+    sand.inv > 0
+  )
+    return;
 
-  sand.hp=
+
+  sand.hp =
     Math.max(
       0,
-      sand.hp-dmg
+      sand.hp - dmg
     );
 
-  sand.inv=.35;
+
+  sand.inv =
+    .35;
+
 
   burst(
     sand.x,
@@ -1553,19 +2316,27 @@ function hurtPlayer(dmg){
     9
   );
 
+
   text(
     sand.x,
     sand.y,
     `-${Math.round(dmg)}`
   );
 
+
   beep(
     120,
     .06
   );
 
-  if(sand.hp<=0)
+
+  if (
+    sand.hp <= 0
+  ) {
+
     finish(false);
+
+  }
 
 }
 
@@ -1574,31 +2345,37 @@ function hurtPlayer(dmg){
    ATAQUE SANDER
 ========================= */
 
-function attack(){
+function attack() {
 
-  if(
+  if (
     !game ||
     paused ||
-    sand.atk>0
-  )return;
+    sand.atk > 0
+  )
+    return;
 
 
-  sand.atk=.38;
+  sand.atk =
+    .38;
 
 
-  if(
-    dist(sand,nem)<=
+  if (
+    dist(
+      sand,
+      nem
+    ) <=
     CFG.atkRange
-  ){
+  ) {
 
-    const p=
-      12+
-      sand.level*4;
+    const p =
+      12 +
+      sand.level * 4;
 
-    nem.hp=
+
+    nem.hp =
       Math.max(
         0,
-        nem.hp-p
+        nem.hp - p
       );
 
 
@@ -1623,10 +2400,17 @@ function attack(){
     );
 
 
-    if(nem.hp<=0)
+    if (
+      nem.hp <= 0
+    ) {
+
       finish(true);
 
-  }else{
+    }
+
+  }
+
+  else {
 
     message(
       "Némesis está fora do alcance.",
@@ -1639,56 +2423,69 @@ function attack(){
 
 
 /* =========================
-   ESPECIAL
+   ESPECIAL / CONGELAMENTO
 ========================= */
 
-function special(){
+function special() {
 
-  if(
+  if (
     !game ||
     paused ||
-    sand.special>0
-  )return;
+    sand.special > 0
+  )
+    return;
 
 
-  sand.special=4;
+  sand.special =
+    4;
 
 
-  const d=
+  const d =
     dist(
       sand,
       nem
     );
 
 
-  if(
-    d<=CFG.specialRange
-  ){
+  if (
+    d <=
+    CFG.specialRange
+  ) {
 
-    const p=
-      28+
-      sand.level*8;
+    const p =
+      28 +
+      sand.level * 8;
 
 
-    nem.hp=
+    nem.hp =
       Math.max(
         0,
-        nem.hp-p
+        nem.hp - p
       );
+
+
+    nem.freeze =
+      2.4;
 
 
     burst(
       nem.x,
       nem.y,
-      "#9b82ff",
-      22
+      "#72eaff",
+      26
     );
 
 
     text(
       nem.x,
       nem.y,
-      `-${p} ESPECIAL`
+      `-${p} CONGELADO`
+    );
+
+
+    message(
+      "NÉMESIS CONGELADO!",
+      1.2
     );
 
 
@@ -1698,22 +2495,32 @@ function special(){
     );
 
 
-    if(nem.hp<=0)
+    if (
+      nem.hp <= 0
+    ) {
+
       finish(true);
 
+    }
 
-  }else{
+  }
 
-    const n=
+  else {
+
+    const n =
       norm(
-        nem.x-sand.x,
-        nem.y-sand.y
+        nem.x - sand.x,
+        nem.y - sand.y
       );
 
 
     burst(
-      sand.x+n.x*70,
-      sand.y+n.y*70,
+      sand.x +
+      n.x * 70,
+
+      sand.y +
+      n.y * 70,
+
       "#8fd8ff",
       14
     );
@@ -1739,56 +2546,65 @@ function special(){
    TELEPORTE
 ========================= */
 
-function teleport(){
+function teleport() {
 
-  if(
+  if (
     !game ||
     paused ||
-    sand.tp>0
-  )return;
+    sand.tp > 0
+  )
+    return;
 
 
-  let tx=sand.x;
-  let ty=sand.y;
+  let tx =
+    sand.x;
+
+  let ty =
+    sand.y;
 
 
-  for(
-    let i=1;
-    i<=8;
+  for (
+    let i = 1;
+    i <= 8;
     i++
-  ){
+  ) {
 
-    const nx=
-      sand.x+
-      sand.f.x*
-      260*i/8;
-
-    const ny=
-      sand.y+
-      sand.f.y*
-      260*i/8;
+    const nx =
+      sand.x +
+      sand.f.x *
+      260 *
+      i /
+      8;
 
 
-    if(
+    const ny =
+      sand.y +
+      sand.f.y *
+      260 *
+      i /
+      8;
+
+
+    if (
       walkable(
         nx,
         ny,
         sand.r
       )
-    ){
+    ) {
 
-      tx=nx;
-      ty=ny;
+      tx = nx;
+      ty = ny;
 
     }
 
   }
 
 
-  if(
-    tx===sand.x &&
-    ty===sand.y
-  ){
+  if (
+    tx === sand.x &&
+    ty === sand.y
+  ) {
 
     message(
       "Teleporte bloqueado.",
@@ -1800,10 +2616,11 @@ function teleport(){
   }
 
 
-  sand.x=tx;
-  sand.y=ty;
+  sand.x = tx;
+  sand.y = ty;
 
-  sand.tp=CFG.tp;
+  sand.tp =
+    CFG.tp;
 
 
   burst(
@@ -1829,17 +2646,19 @@ function teleport(){
 
 
 /* =========================
-   UPDATE
+   UPDATE GERAL
 ========================= */
 
-function update(dt){
+function update(
+  dt
+) {
 
-  elapsed+=dt;
+  elapsed += dt;
 
 
-  if(
-    elapsed>=CFG.time
-  ){
+  if (
+    elapsed >= CFG.time
+  ) {
 
     finish(false);
 
@@ -1849,191 +2668,247 @@ function update(dt){
 
 
   updateEnergy(dt);
+
   updatePlayer(dt);
+
   updateEnemy(dt);
 
 
-  for(
+  for (
     const p of parts
-  ){
+  ) {
 
-    p.life-=dt;
+    p.life -= dt;
 
-    p.x+=p.vx*dt;
-    p.y+=p.vy*dt;
+    p.x +=
+      p.vx * dt;
 
-    p.vy+=40*dt;
+    p.y +=
+      p.vy * dt;
+
+    p.vy +=
+      40 * dt;
 
   }
 
 
-  parts=
+  parts =
     parts.filter(
-      p=>p.life>0
+      p => p.life > 0
     );
 
 
-  for(
+  for (
     const t of texts
-  ){
+  ) {
 
-    t.life-=dt;
-    t.y-=25*dt;
+    t.life -= dt;
+
+    t.y -=
+      25 * dt;
 
   }
 
 
-  texts=
+  texts =
     texts.filter(
-      t=>t.life>0
+      t => t.life > 0
     );
 
 
-  const viewW=
-    W/VIEW_ZOOM;
+  /*
+    Câmera acompanha Sander.
+  */
 
-  const viewH=
-    H/VIEW_ZOOM;
+  const viewW =
+    W /
+    VIEW_ZOOM;
 
 
-  const targetCamX=
+  const viewH =
+    H /
+    VIEW_ZOOM;
+
+
+  const targetCamX =
     clamp(
       sand.x,
-      viewW/2,
-      MAP.w-viewW/2
+      viewW / 2,
+      MAP.w - viewW / 2
     );
 
 
-  const targetCamY=
+  const targetCamY =
     clamp(
       sand.y,
-      viewH/2,
-      MAP.h-viewH/2
+      viewH / 2,
+      MAP.h - viewH / 2
     );
 
 
-  camera.x+=
+  camera.x +=
     (
-      targetCamX-camera.x
-    )*
+      targetCamX -
+      camera.x
+    ) *
     Math.min(
       1,
-      dt*8
+      dt * 8
     );
 
 
-  camera.y+=
+  camera.y +=
     (
-      targetCamY-camera.y
-    )*
+      targetCamY -
+      camera.y
+    ) *
     Math.min(
       1,
-      dt*8
+      dt * 8
     );
 
 
-  $("sanderHp").style.width=
-    sand.hp+"%";
+  /*
+    HUD
+  */
+
+  $("sanderHp").style.width =
+    sand.hp + "%";
 
 
-  $("sanderEnergy").style.width=
-    (sand.energy/10)+"%";
+  $("sanderEnergy").style.width =
+    (sand.energy / 10) + "%";
 
 
-  $("nemesisHp").style.width=
-    (nem.hp/nem.maxHp*100)+"%";
+  $("nemesisHp").style.width =
+    (
+      nem.hp /
+      nem.maxHp *
+      100
+    ) + "%";
 
 
-  $("timer").textContent=
+  $("timer").textContent =
     timeLeft();
 
 
-  $("teleportStatus").textContent=
-    sand.tp<=0
-    ?"TELEPORTE: PRONTO"
-    :`TELEPORTE: ${Math.ceil(sand.tp)}s`;
+  $("teleportStatus").textContent =
+    sand.tp <= 0
+
+      ? "TELEPORTE: PRONTO"
+
+      : `TELEPORTE: ${Math.ceil(sand.tp)}s`;
 
 
-  $("distanceInfo").textContent=
+  $("distanceInfo").textContent =
     `NÉMESIS: ${Math.round(dist(sand,nem))}m`;
 
 
-  $("energyInfo").textContent=
+  $("energyInfo").textContent =
     `ENERGIA: ${Math.round(sand.energy)} | NÍVEL ${sand.level}`;
 
 
-  const nd=
+  const nd =
     $("nemesis-direction");
 
 
-  if(nd){
+  if (nd) {
 
-    const sx=
-      (nem.x-camera.x)*
-      VIEW_ZOOM+
-      W/2;
-
-    const sy=
-      (nem.y-camera.y)*
-      VIEW_ZOOM+
-      H/2;
+    const sx =
+      (
+        nem.x -
+        camera.x
+      ) *
+      VIEW_ZOOM +
+      W / 2;
 
 
-    const inside=
-      sx>=0 &&
-      sy>=0 &&
-      sx<=W &&
-      sy<=H;
+    const sy =
+      (
+        nem.y -
+        camera.y
+      ) *
+      VIEW_ZOOM +
+      H / 2;
 
 
-    if(inside){
-
-      nd.textContent=
-        "NÉMESIS VISÍVEL";
-
-      nd.style.opacity=".65";
-
-    }else{
-
-      const dx=
-        nem.x-camera.x;
-
-      const dy=
-        nem.y-camera.y;
+    const inside =
+      sx >= 0 &&
+      sy >= 0 &&
+      sx <= W &&
+      sy <= H;
 
 
-      nd.textContent=
+    if (inside) {
+
+      nd.textContent =
+        nem.freeze > 0
+
+          ? `NÉMESIS CONGELADO • ${nem.freeze.toFixed(1)}s`
+
+          : "NÉMESIS VISÍVEL";
+
+
+      nd.style.opacity =
+        ".9";
+
+    }
+
+    else {
+
+      const dx =
+        nem.x -
+        camera.x;
+
+
+      const dy =
+        nem.y -
+        camera.y;
+
+
+      nd.textContent =
         `NÉMESIS ${Math.round(dist(sand,nem))}m • ${
-          Math.abs(dx)>Math.abs(dy)
-          ?(
-            dx>0
-            ?"→ DIREITA"
-            :"← ESQUERDA"
-          )
-          :(
-            dy>0
-            ?"↓ ABAIXO"
-            :"↑ ACIMA"
-          )
+          Math.abs(dx) >
+          Math.abs(dy)
+
+            ? (
+                dx > 0
+                  ? "→ DIREITA"
+                  : "← ESQUERDA"
+              )
+
+            : (
+                dy > 0
+                  ? "↓ ABAIXO"
+                  : "↑ ACIMA"
+              )
         }`;
 
 
-      nd.style.opacity="1";
+      nd.style.opacity =
+        "1";
 
     }
 
   }
 
 
-  if(msgT>0){
+  if (
+    msgT > 0
+  ) {
 
-    msgT-=dt;
+    msgT -= dt;
 
-    if(msgT<=0){
+
+    if (
+      msgT <= 0
+    ) {
 
       $("message")
         .classList
-        .remove("show");
+        .remove(
+          "show"
+        );
 
     }
 
@@ -2042,24 +2917,76 @@ function update(dt){
 }
 
 
-function timeLeft(){
+/* =========================
+   ENERGIA
+========================= */
 
-  let s=
+function updateEnergy(dt) {
+
+  for (
+    const e of energy
+  ) {
+
+    if (
+      e.active
+    )
+      continue;
+
+
+    e.wait -= dt;
+
+
+    if (
+      e.wait <= 0
+    ) {
+
+      /*
+        A energia reaparece.
+      */
+
+      e.active =
+        true;
+
+    }
+
+  }
+
+}
+
+
+/* =========================
+   TEMPO
+========================= */
+
+function timeLeft() {
+
+  let s =
     Math.ceil(
-      CFG.time-elapsed
+      CFG.time -
+      elapsed
     );
 
-  let m=
-    Math.floor(s/60);
 
-  let r=
-    s%60;
+  let m =
+    Math.floor(
+      s / 60
+    );
+
+
+  let r =
+    s % 60;
 
 
   return `${
-    String(m).padStart(2,"0")
+    String(m).padStart(
+      2,
+      "0"
+    )
   }:${
-    String(r).padStart(2,"0")
+    String(r).padStart(
+      2,
+      "0"
+    )
   }`;
 
 }
@@ -2069,9 +2996,11 @@ function timeLeft(){
    DESENHAR MAPA
 ========================= */
 
-function world(){
+function world() {
 
-  if(mapOK){
+  if (
+    mapOK
+  ) {
 
     ctx.drawImage(
       imgs.map,
@@ -2081,9 +3010,13 @@ function world(){
       MAP.h
     );
 
-  }else{
+  }
 
-    ctx.fillStyle="#18582a";
+  else {
+
+    ctx.fillStyle =
+      "#18582a";
+
 
     ctx.fillRect(
       0,
@@ -2093,17 +3026,18 @@ function world(){
     );
 
 
-    ctx.fillStyle="#e7c27e";
+    ctx.fillStyle =
+      "#e7c27e";
 
 
-    for(
+    for (
       const y of [
         145,
         350,
         535,
         720
       ]
-    ){
+    ) {
 
       ctx.fillRect(
         0,
@@ -2115,7 +3049,7 @@ function world(){
     }
 
 
-    for(
+    for (
       const x of [
         120,
         370,
@@ -2123,7 +3057,7 @@ function world(){
         1010,
         1280
       ]
-    ){
+    ) {
 
       ctx.fillRect(
         x,
@@ -2135,12 +3069,14 @@ function world(){
     }
 
 
-    ctx.fillStyle="#0a441b";
+    ctx.fillStyle =
+      "#0a441b";
 
 
-    for(
-      const o of fallbackBlocks
-    ){
+    for (
+      const o of
+      fallbackBlocks
+    ) {
 
       ctx.fillRect(
         o.x,
@@ -2152,10 +3088,13 @@ function world(){
     }
 
 
-    ctx.fillStyle="#fff";
+    ctx.fillStyle =
+      "#fff";
 
-    ctx.font=
+
+    ctx.font =
       "900 30px system-ui";
+
 
     ctx.fillText(
       "ESTAÇÃO PAULISTA",
@@ -2169,61 +3108,79 @@ function world(){
 
 
 /* =========================
-   ENERGIA VISUAL
+   DESENHAR ENERGIA
 ========================= */
 
-function drawEnergy(){
+function drawEnergy() {
 
-  for(
+  for (
     const e of energy
-  ){
+  ) {
 
-    if(!e.active)continue;
+    if (
+      !e.active
+    )
+      continue;
 
 
-    const b=
+    const b =
       Math.sin(
-        elapsed*3+e.p
-      )*3;
+        elapsed * 3 +
+        e.p
+      ) * 3;
 
 
     ctx.save();
 
+
     ctx.translate(
       e.x,
-      e.y+b
+      e.y + b
     );
 
 
-    ctx.shadowBlur=18;
-    ctx.shadowColor="#ffd52b";
+    ctx.shadowBlur =
+      18;
 
-    ctx.fillStyle="#fff5a4";
+
+    ctx.shadowColor =
+      "#ffd52b";
+
+
+    ctx.fillStyle =
+      "#fff5a4";
+
 
     ctx.beginPath();
+
 
     ctx.arc(
       0,
       0,
       10,
       0,
-      Math.PI*2
+      Math.PI * 2
     );
+
 
     ctx.fill();
 
 
-    ctx.fillStyle="#ffb300";
+    ctx.fillStyle =
+      "#ffb300";
+
 
     ctx.beginPath();
+
 
     ctx.arc(
       0,
       0,
       5,
       0,
-      Math.PI*2
+      Math.PI * 2
     );
+
 
     ctx.fill();
 
@@ -2236,15 +3193,16 @@ function drawEnergy(){
 
 
 /* =========================
-   PERSONAGEM
+   PERSONAGENS
 ========================= */
 
 function character(
   o,
   player
-){
+) {
 
   ctx.save();
+
 
   ctx.translate(
     o.x,
@@ -2252,169 +3210,276 @@ function character(
   );
 
 
-  if(
-    (player&&sanderOK) ||
-    (!player&&nemesisOK)
-  ){
+  if (
+    (
+      player &&
+      sanderOK
+    ) ||
+    (
+      !player &&
+      nemesisOK
+    )
+  ) {
 
-    const im=
+    const im =
       player
-      ?imgs.sander
-      :imgs.nemesis;
+        ? imgs.sander
+        : imgs.nemesis;
 
 
-    const cols=4;
-    const rows=4;
-
-    const fw=
-      im.width/cols;
-
-    const fh=
-      im.height/rows;
+    const cols =
+      4;
 
 
-    const moving=
+    const rows =
+      4;
+
+
+    const fw =
+      im.width /
+      cols;
+
+
+    const fh =
+      im.height /
+      rows;
+
+
+    const moving =
       Math.hypot(
-        o.vx||0,
-        o.vy||0
-      )>.1;
+        o.vx || 0,
+        o.vy || 0
+      ) > .1;
 
 
-    const actionRow=0;
+    const actionRow =
+      0;
 
 
-    let col=
+    let col =
       moving
-      ?Math.floor(elapsed*8)%4
-      :0;
+        ? Math.floor(
+            elapsed * 8
+          ) % 4
+        : 0;
 
 
-    const row=
+    const row =
       actionRow;
 
 
-    const size=
+    const size =
       player
-      ?Math.max(
-        92,
-        o.r*4
-      )
-      :Math.max(
-        104,
-        o.r*4.3
-      );
+
+        ? Math.max(
+            92,
+            o.r * 4.0
+          )
+
+        : Math.max(
+            104,
+            o.r * 4.3
+          );
 
 
     ctx.drawImage(
       im,
-      col*fw,
-      row*fh,
+
+      col * fw,
+      row * fh,
+
       fw,
       fh,
-      -size/2,
-      -size/2,
+
+      -size / 2,
+      -size / 2,
+
       size,
       size
     );
 
+  }
 
-  }else if(player){
+  else if (
+    player
+  ) {
 
-    ctx.fillStyle="#167fe4";
+    ctx.fillStyle =
+      "#167fe4";
+
 
     ctx.beginPath();
+
 
     ctx.arc(
       0,
       -2,
       o.r,
       0,
-      Math.PI*2
+      Math.PI * 2
     );
+
 
     ctx.fill();
 
+  }
 
-  }else{
+  else {
 
-    ctx.fillStyle="#f3f3ec";
+    ctx.fillStyle =
+      "#f3f3ec";
+
 
     ctx.beginPath();
+
 
     ctx.ellipse(
       0,
       0,
-      o.r*.9,
-      o.r*1.1,
+      o.r * .9,
+      o.r * 1.1,
       0,
       0,
-      Math.PI*2
+      Math.PI * 2
     );
+
 
     ctx.fill();
 
   }
 
 
-  if(o.level>1){
+  /*
+    Efeito de congelamento.
+  */
 
-    ctx.strokeStyle=
-      player
-      ?"#4ecbffaa"
-      :"#ffb545aa";
+  if (
+    !player &&
+    nem.freeze > 0
+  ) {
 
-    ctx.lineWidth=3;
+    ctx.strokeStyle =
+      "#72eaff";
 
-    ctx.shadowBlur=15;
 
-    ctx.shadowColor=
-      ctx.strokeStyle;
+    ctx.lineWidth =
+      4;
+
+
+    ctx.shadowBlur =
+      18;
+
+
+    ctx.shadowColor =
+      "#72eaff";
+
 
     ctx.beginPath();
+
 
     ctx.arc(
       0,
       0,
-      o.r+
-      7+
-      Math.sin(elapsed*4)*2,
+      o.r +
+      10 +
+      Math.sin(
+        elapsed * 8
+      ) * 2,
+
       0,
-      Math.PI*2
+      Math.PI * 2
     );
+
 
     ctx.stroke();
 
   }
 
 
-  const hp=
+  /*
+    Aura de evolução.
+  */
+
+  if (
+    o.level > 1
+  ) {
+
+    ctx.strokeStyle =
+      player
+        ? "#4ecbffaa"
+        : "#ffb545aa";
+
+
+    ctx.lineWidth =
+      3;
+
+
+    ctx.shadowBlur =
+      15;
+
+
+    ctx.shadowColor =
+      ctx.strokeStyle;
+
+
+    ctx.beginPath();
+
+
+    ctx.arc(
+      0,
+      0,
+      o.r +
+      7 +
+      Math.sin(
+        elapsed * 4
+      ) * 2,
+
+      0,
+      Math.PI * 2
+    );
+
+
+    ctx.stroke();
+
+  }
+
+
+  /*
+    Barra de vida.
+  */
+
+  const hp =
     player
-    ?o.hp/100
-    :o.hp/o.maxHp;
+      ? o.hp / 100
+      : o.hp / o.maxHp;
 
 
-  ctx.shadowBlur=0;
+  ctx.shadowBlur =
+    0;
 
-  ctx.fillStyle="#000a";
+
+  ctx.fillStyle =
+    "#000a";
+
 
   ctx.fillRect(
     -25,
-    -o.r-14,
+    -o.r - 14,
     50,
     5
   );
 
 
-  ctx.fillStyle=
+  ctx.fillStyle =
     player
-    ?"#45e77f"
-    :"#ff5361";
+      ? "#45e77f"
+      : "#ff5361";
 
 
   ctx.fillRect(
     -25,
-    -o.r-14,
-    50*
+    -o.r - 14,
+    50 *
     clamp(
       hp,
       0,
@@ -2430,10 +3495,10 @@ function character(
 
 
 /* =========================
-   DESENHO
+   DESENHAR JOGO
 ========================= */
 
-function draw(){
+function draw() {
 
   ctx.clearRect(
     0,
@@ -2447,8 +3512,8 @@ function draw(){
 
 
   ctx.translate(
-    W/2,
-    H/2
+    W / 2,
+    H / 2
   );
 
 
@@ -2466,12 +3531,15 @@ function draw(){
 
   world();
 
+
   drawEnergy();
+
 
   character(
     sand,
     true
   );
+
 
   character(
     nem,
@@ -2479,54 +3547,78 @@ function draw(){
   );
 
 
-  for(
-    const p of parts
-  ){
+  /*
+    Partículas.
+  */
 
-    ctx.globalAlpha=
+  for (
+    const p of parts
+  ) {
+
+    ctx.globalAlpha =
       Math.max(
         0,
-        p.life/.9
+        p.life / .9
       );
 
-    ctx.fillStyle=
+
+    ctx.fillStyle =
       p.color;
 
+
     ctx.beginPath();
+
 
     ctx.arc(
       p.x,
       p.y,
-      3/VIEW_ZOOM,
+      3 / VIEW_ZOOM,
       0,
-      Math.PI*2
+      Math.PI * 2
     );
+
 
     ctx.fill();
 
   }
 
 
-  ctx.globalAlpha=1;
+  ctx.globalAlpha =
+    1;
 
 
-  for(
+  /*
+    Textos de dano.
+  */
+
+  for (
     const t of texts
-  ){
+  ) {
 
-    ctx.globalAlpha=t.life;
+    ctx.globalAlpha =
+      t.life;
 
-    ctx.font=
-      `900 ${14/VIEW_ZOOM}px system-ui`;
 
-    ctx.textAlign="center";
+    ctx.font =
+      `900 ${
+        14 / VIEW_ZOOM
+      }px system-ui`;
 
-    ctx.fillStyle="#fff";
 
-    ctx.strokeStyle="#000b";
+    ctx.textAlign =
+      "center";
 
-    ctx.lineWidth=
-      4/VIEW_ZOOM;
+
+    ctx.fillStyle =
+      "#fff";
+
+
+    ctx.strokeStyle =
+      "#000b";
+
+
+    ctx.lineWidth =
+      4 / VIEW_ZOOM;
 
 
     ctx.strokeText(
@@ -2547,6 +3639,7 @@ function draw(){
 
   ctx.restore();
 
+
   drawMini();
 
 }
@@ -2556,35 +3649,48 @@ function draw(){
    MINIMAPA
 ========================= */
 
-function buildRoadMini(){
+function buildRoadMini() {
 
-  const mw=420;
+  const mw =
+    420;
 
-  const mh=
+
+  const mh =
     Math.round(
-      mw*MAP.h/MAP.w
+      mw *
+      MAP.h /
+      MAP.w
     );
 
 
-  roadMini=
+  roadMini =
     document.createElement(
       "canvas"
     );
 
 
-  roadMini.width=mw;
-  roadMini.height=mh;
+  roadMini.width =
+    mw;
 
 
-  const rc=
-    roadMini.getContext("2d");
+  roadMini.height =
+    mh;
 
 
-  const sx=
-    MAP.w/mw;
+  const rc =
+    roadMini.getContext(
+      "2d"
+    );
 
-  const sy=
-    MAP.h/mh;
+
+  const sx =
+    MAP.w /
+    mw;
+
+
+  const sy =
+    MAP.h /
+    mh;
 
 
   rc.clearRect(
@@ -2595,51 +3701,58 @@ function buildRoadMini(){
   );
 
 
-  for(
-    let y=0;
-    y<mh;
+  for (
+    let y = 0;
+    y < mh;
     y++
-  ){
+  ) {
 
-    for(
-      let x=0;
-      x<mw;
+    for (
+      let x = 0;
+      x < mw;
       x++
-    ){
+    ) {
 
-      const wx=
-        (x+.5)*sx;
-
-      const wy=
-        (y+.5)*sy;
+      const wx =
+        (x + .5) *
+        sx;
 
 
-      let ok=
+      const wy =
+        (y + .5) *
+        sy;
+
+
+      let ok =
         pathPixel(
           wx,
           wy
         );
 
 
-      if(!ok){
+      if (!ok) {
 
-        for(
+        for (
           const q of [
             [-2,0],
             [2,0],
             [0,-2],
             [0,2]
           ]
-        ){
+        ) {
 
-          if(
+          if (
             pathPixel(
-              wx+q[0]*sx,
-              wy+q[1]*sy
-            )
-          ){
+              wx +
+              q[0] * sx,
 
-            ok=true;
+              wy +
+              q[1] * sy
+            )
+          ) {
+
+            ok = true;
+
             break;
 
           }
@@ -2649,9 +3762,11 @@ function buildRoadMini(){
       }
 
 
-      if(ok){
+      if (ok) {
 
-        rc.fillStyle="#e8c879";
+        rc.fillStyle =
+          "#e8c879";
+
 
         rc.fillRect(
           x,
@@ -2669,38 +3784,45 @@ function buildRoadMini(){
 }
 
 
-function drawMini(){
+/* =========================
+   DESENHAR MINIMAPA
+========================= */
 
-  const r=
+function drawMini() {
+
+  const r =
     mini.getBoundingClientRect();
 
 
-  const mw=
+  const mw =
     Math.max(
       210,
       Math.floor(
-        r.width||300
+        r.width || 300
       )
     );
 
 
-  const mh=
+  const mh =
     Math.max(
       120,
       Math.floor(
-        mw*MAP.h/MAP.w
+        mw *
+        MAP.h /
+        MAP.w
       )
     );
 
 
-  mini.width=
+  mini.width =
     Math.floor(
-      mw*dpr
+      mw * dpr
     );
 
-  mini.height=
+
+  mini.height =
     Math.floor(
-      mh*dpr
+      mh * dpr
     );
 
 
@@ -2722,7 +3844,9 @@ function drawMini(){
   );
 
 
-  mctx.fillStyle="#07131dd9";
+  mctx.fillStyle =
+    "#07131dd9";
+
 
   mctx.fillRect(
     0,
@@ -2732,7 +3856,9 @@ function drawMini(){
   );
 
 
-  if(roadMini){
+  if (
+    roadMini
+  ) {
 
     mctx.drawImage(
       roadMini,
@@ -2742,7 +3868,11 @@ function drawMini(){
       mh
     );
 
-  }else if(mapOK){
+  }
+
+  else if (
+    mapOK
+  ) {
 
     mctx.drawImage(
       imgs.map,
@@ -2755,39 +3885,70 @@ function drawMini(){
   }
 
 
-  mctx.fillStyle="#ffffff66";
+  /*
+    Estação.
+  */
+
+  mctx.fillStyle =
+    "#ffffff66";
+
 
   mctx.beginPath();
 
+
   mctx.arc(
-    700/MAP.w*mw,
-    72/MAP.h*mh,
+    700 /
+    MAP.w *
+    mw,
+
+    72 /
+    MAP.h *
+    mh,
+
     2.5,
+
     0,
-    Math.PI*2
+    Math.PI * 2
   );
+
 
   mctx.fill();
 
 
-  for(
+  /*
+    Energias.
+  */
+
+  for (
     const e of energy
-  ){
+  ) {
 
-    if(e.active){
+    if (
+      e.active
+    ) {
 
-      mctx.fillStyle=
+      mctx.fillStyle =
         "#ffd52b99";
+
 
       mctx.beginPath();
 
+
       mctx.arc(
-        e.x/MAP.w*mw,
-        e.y/MAP.h*mh,
+        e.x /
+        MAP.w *
+        mw,
+
+        e.y /
+        MAP.h *
+        mh,
+
         1.8,
+
         0,
-        Math.PI*2
+        Math.PI * 2
       );
+
 
       mctx.fill();
 
@@ -2796,51 +3957,95 @@ function drawMini(){
   }
 
 
-  const viewW=
+  /*
+    Área da câmera.
+  */
+
+  const viewW =
     Math.min(
       MAP.w,
-      W/VIEW_ZOOM
+      W /
+      VIEW_ZOOM
     );
 
 
-  const viewH=
+  const viewH =
     Math.min(
       MAP.h,
-      H/VIEW_ZOOM
+      H /
+      VIEW_ZOOM
     );
 
 
-  mctx.strokeStyle=
+  mctx.strokeStyle =
     "#ffffff55";
 
-  mctx.lineWidth=1;
+
+  mctx.lineWidth =
+    1;
 
 
   mctx.strokeRect(
-    (camera.x-viewW/2)/
-      MAP.w*mw,
 
-    (camera.y-viewH/2)/
-      MAP.h*mh,
+    (
+      camera.x -
+      viewW / 2
+    ) /
+    MAP.w *
+    mw,
 
-    viewW/MAP.w*mw,
+    (
+      camera.y -
+      viewH / 2
+    ) /
+    MAP.h *
+    mh,
 
-    viewH/MAP.h*mh
+    viewW /
+    MAP.w *
+    mw,
+
+    viewH /
+    MAP.h *
+    mh
+
   );
 
 
-  $("sander-marker").style.left=
-    sand.x/MAP.w*100+"%";
+  /*
+    Marcador Sander.
+  */
 
-  $("sander-marker").style.top=
-    sand.y/MAP.h*100+"%";
+  $("sander-marker").style.left =
+    sand.x /
+    MAP.w *
+    100 +
+    "%";
 
 
-  $("nemesis-marker").style.left=
-    nem.x/MAP.w*100+"%";
+  $("sander-marker").style.top =
+    sand.y /
+    MAP.h *
+    100 +
+    "%";
 
-  $("nemesis-marker").style.top=
-    nem.y/MAP.h*100+"%";
+
+  /*
+    Marcador Némesis.
+  */
+
+  $("nemesis-marker").style.left =
+    nem.x /
+    MAP.w *
+    100 +
+    "%";
+
+
+  $("nemesis-marker").style.top =
+    nem.y /
+    MAP.h *
+    100 +
+    "%";
 
 }
 
@@ -2853,31 +4058,44 @@ function burst(
   x,
   y,
   color,
-  n=10
-){
+  n = 10
+) {
 
-  for(
-    let i=0;
-    i<n;
+  for (
+    let i = 0;
+    i < n;
     i++
-  ){
+  ) {
 
-    const a=
-      Math.random()*
-      Math.PI*2;
+    const a =
+      Math.random() *
+      Math.PI *
+      2;
 
-    const s=
-      Math.random()*90+30;
+
+    const s =
+      Math.random() *
+      90 +
+      30;
 
 
     parts.push({
+
       x,
       y,
-      vx:Math.cos(a)*s,
-      vy:Math.sin(a)*s,
-      life:.45+
-        Math.random()*.5,
+
+      vx:
+        Math.cos(a) * s,
+
+      vy:
+        Math.sin(a) * s,
+
+      life:
+        .45 +
+        Math.random() * .5,
+
       color
+
     });
 
   }
@@ -2889,38 +4107,42 @@ function text(
   x,
   y,
   s
-){
+) {
 
   texts.push({
+
     x,
     y,
     s,
-    life:1
+    life: 1
+
   });
 
 }
 
 
 /* =========================
-   LOOP PRINCIPAL
+   LOOP
 ========================= */
 
-function loop(now){
+function loop(now) {
 
-  if(
+  if (
     !game ||
     paused
-  )return;
+  )
+    return;
 
 
-  const dt=
+  const dt =
     Math.min(
-      (now-last)/1000,
+      (now - last) / 1000,
       .035
     );
 
 
-  last=now;
+  last =
+    now;
 
 
   actions();
@@ -2938,7 +4160,7 @@ function loop(now){
 
 
 /* =========================
-   INICIAR MINIMAPA
+   INICIALIZAÇÃO
 ========================= */
 
 drawMini();
